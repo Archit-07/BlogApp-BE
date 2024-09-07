@@ -1,19 +1,19 @@
 const mongoose = require("mongoose");
 
-const BlogSchema = mongoose.Schema({
+const BlogSchema = mongoose.Schema(
+  {
     user: {
       type: String,
       required: true,
-      unique: true, 
-      immutable: true
+      immutable: true,
     },
     blogName: {
       type: String,
-      required: true
+      required: true,
     },
     category: {
       type: String,
-      required: true
+      required: true,
     },
     article: {
       type: String,
@@ -21,12 +21,14 @@ const BlogSchema = mongoose.Schema({
     },
     authorName: {
       type: String,
-      required: true
+      required: true,
     },
-    comments: [{
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Comment",
-    }],
+    comments: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Comment",
+      },
+    ],
     like: {
       type: Number,
       default: 0,
@@ -34,7 +36,8 @@ const BlogSchema = mongoose.Schema({
   },
   {
     timestamps: true,
-  });
+  }
+);
 
 const Blog = mongoose.model("Blogs", BlogSchema);
 

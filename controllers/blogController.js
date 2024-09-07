@@ -111,29 +111,26 @@ const addBlog = asyncHandler(async (req, res) => {
   const { blogName, category, article, authorName } = req.body;
 
   if (!article || !blogName || !category || !authorName) {
-    res.status(400);
-    throw new Error(
-      "Cannot create empty article OR blogName OR category OR authorName"
+    return res.status(400).json({ message: "Cannot create empty article OR blogName OR category OR authorName" });
+  }
+
+  try {
+    const blog = new Blog({
+      user: req.params.loginId,
+      blogName,
+      category,
+      article,
+      authorName,
+    });
+    const createdBlog = await blog.save();
+    await User.findOneAndUpdate(
+      { loginId: req.params.loginId },
+      { $push: { blogs: createdBlog._id } }
     );
-  } else {
-    try {
-      const blog = new Blog({
-        user: req.params.loginId,
-        blogName,
-        category,
-        article,
-        authorName,
-      });
-      const createdBlog = await blog.save();
-      let user = await User.findOneAndUpdate(
-        { loginId: req.params.loginId },
-        { $push: { blogs: createdBlog._id } }
-      );
-      res.status(201).json(createdBlog);
-    } catch (err) {
-      res.status(500);
-      throw new Error("Something went wrong");
-    }
+    res.status(201).json(createdBlog);
+  } catch (err) {
+    console.error('Error saving blog:', err);
+    res.status(500).json({ message: "Something went wrong" });
   }
 });
 
