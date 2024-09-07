@@ -104,26 +104,26 @@ const updateUserProfile = asyncHandler(async (req, res) => {
   }
 });
 
-const forgotPass =asyncHandler(async (req, res) => {
-  try{
-    const {loginId,password}= req.body;
+const forgotPass = asyncHandler(async (req, res) => {
+  try {
+    const { loginId, email, password } = req.body;
     const user = await User.findOne({ loginId });
-      if(user)
-      {
+
+    if (user && user.email === email) {
       user.password = password;
       const updatedUser = await user.save();
-      console.log(updatedUser)
-      res.status(200).json({message:"password updated successfully!!"})
-      }
-      else{
-        res.status(404).json({message:"user Not Found"});
-      }
-    
+      console.log(updatedUser);
+      res.status(200).json({ message: "Password updated successfully!" });
+    } else {
+      console.log("invalid email");
+      res.status(404).json({ message: "User not found" });
+    }
+  } catch (err) {
+    console.error('Error updating password:', err);
+    res.status(500).json({ message: "Something went wrong" });
   }
-  catch(err){
-    res.status(500).json({message:"something went wrong"});
-  }
-})
+});
+
 
 const getUsers = asyncHandler(async (req, res) => {
   const users = await User.find().populate({path: 'blogs', model: Blog});
