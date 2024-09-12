@@ -6,6 +6,13 @@ const commentRoutes = require("./routes/commentRoutes.js");
 const express = require('express');
 const  connectDB = require("./config/db.js");
 const bodyParser =require('body-parser');
+const { runProducer, runConsumer } = require('./kafka'); // Import Kafka producer and consumer
+
+// Connect Kafka producer when the server starts
+runProducer().catch(console.error);
+
+// Start the Kafka consumer
+runConsumer().catch(console.error);
 
 connectDB().catch(console.dir);
 const app = express();

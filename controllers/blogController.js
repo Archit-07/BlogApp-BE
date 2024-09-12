@@ -3,18 +3,16 @@ const asyncHandler = require("express-async-handler");
 const Comment = require("../models/commentModel.js");
 const User = require("../models/userModel.js");
 const { isObjectIdOrHexString } = require("mongoose");
+const { sendMessage, runProducer } = require('../kafka');
+
+runProducer().catch(console.error);
 
 const getBlogs = asyncHandler(async (req, res) => {
   try {
     const blogs = await Blog.find()
       .populate({ path: "comments", model: Comment })
       .sort({ updatedAt: -1 });
-    if (blogs) {
-      // console.log("blogs:",blogs);
-      res.json(blogs);
-    } else {
-      res.json({ message: "there are no blogs" });
-    }
+    res.json(blogs);
   } catch (err) {
     res.status(500);
     throw new Error("Something went wrong");
@@ -35,67 +33,56 @@ const getUserBlogs = asyncHandler(async (req, res) => {
 
 const getBlogByCategoryAndDuration = asyncHandler(async (req, res) => {
   try {
-      const startDateString = req.params.durationFrom; // Date string in '2024-08-17' format
-      const endDateString = req.params.durationTo; // Date string in '2024-08-17' format
+    const { durationFrom, durationTo, category } = req.params;
 
-      if (startDateString > endDateString) {
-          throw new Error(`durationTo can't be less than durationFrom`);
-      }
+    if (durationFrom > durationTo) {
+      throw new Error(`durationTo can't be less than durationFrom`);
+    }
 
-      // Convert date strings to UTC format
-      const startDate = new Date(startDateString + 'T00:00:00.000Z');
-      const endDate = new Date(endDateString + 'T23:59:59.999Z');
+    const startDate = new Date(durationFrom + "T00:00:00.000Z");
+    const endDate = new Date(durationTo + "T23:59:59.999Z");
 
-      const category = req.params.category; // Replace with the actual category
+    let query = { createdAt: { $gte: startDate, $lte: endDate } };
+    if (category !== "all" && category !== ":category") {
+      query.category = category;
+    }
 
-      let query = { createdAt: { $gte: startDate, $lte: endDate } };
+    const blogs = await Blog.find(query)
+      .populate({ path: "comments", model: Comment })
+      .sort({ updatedAt: -1 });
 
-      if (category !== 'all' && category !== ':category') {
-        query.category = category;
-      }
-
-      const blogs = await Blog.find(query)
-          .populate({ path: 'comments', model: Comment })
-          .sort({ updatedAt: -1 });
-
-      res.json(blogs);
+    res.json(blogs);
   } catch (err) {
-      res.status(500);
-      throw new Error('Something went wrong');
+    res.status(500);
+    throw new Error("Something went wrong");
   }
 });
 
 const getBlogByCategory = asyncHandler(async (req, res) => {
   try {
-    
-      if (!req.params.category || req.params.category === ':category') {
-          throw new Error(`category can't be empty`);
-      }
+    const { category } = req.params;
 
-      const category = req.params.category; // Replace with the actual category
+    if (!category || category === ":category") {
+      throw new Error(`category can't be empty`);
+    }
 
-      let query = { category: category };
+    const blogs = await Blog.find({ category })
+      .populate({ path: "comments", model: Comment })
+      .sort({ updatedAt: -1 });
 
-      const blogs = await Blog.find(query)
-          .populate({ path: 'comments', model: Comment })
-          .sort({ updatedAt: -1 });
-
-      res.json(blogs);
+    res.json(blogs);
   } catch (err) {
-      res.status(500);
-      throw new Error('Something went wrong');
+    res.status(500);
+    throw new Error("Something went wrong");
   }
 });
 
-
-
 const getBlogById = asyncHandler(async (req, res) => {
   try {
-    const blog = await Blog.findById({ _id: req.params.id }).populate({
+    const blog = await Blog.findById(req.params.id).populate({
       path: "comments",
       model: Comment,
     });
-    console.log(blog);
     if (blog) {
       res.status(200).json({ blog });
     } else {
@@ -123,10 +110,15 @@ const addBlog = asyncHandler(async (req, res) => {
       authorName,
     });
     const createdBlog = await blog.save();
+
     await User.findOneAndUpdate(
       { loginId: req.params.loginId },
       { $push: { blogs: createdBlog._id } }
     );
+
+    // Send Kafka message after blog creation
+    await sendMessage('blog-events', JSON.stringify({ type: 'BLOG_CREATED', blog: createdBlog }));
+
     res.status(201).json(createdBlog);
   } catch (err) {
     console.error('Error saving blog:', err);
@@ -134,94 +126,61 @@ const addBlog = asyncHandler(async (req, res) => {
   }
 });
 
-const findBlogById = async (id) => {
-  return await Blog.findById(id);
-};
-
-const findUserByLoginId = async (loginId) => {
-  return await User.findOne({ loginId });
-};
-
 const deleteBlog = asyncHandler(async (req, res) => {
   try {
     const { id, loginId } = req.params;
-    console.log("params:", req.params);
+    const blog = await Blog.findById(id);
+    const user = await User.findOne({ loginId });
 
-    const blog = await findBlogById(id);
-    const user = await findUserByLoginId(loginId);
-
-    if (!blog) {
-      res.status(404);
-      throw new Error("Blog not found");
+    if (!blog || blog.user.toString() !== loginId) {
+      res.status(404).json({ message: "Blog not found or unauthorized action" });
+      return;
     }
 
-    if (blog.user.toString() !== loginId) {
-      res.status(401);
-      throw new Error("You can't perform this action");
-    }
+    await Comment.deleteMany({ blog: id });
+    await blog.deleteOne();
+    user.blogs.pull(id);
+    await user.save();
 
-    if (user) {
-      const index = user.blogs.indexOf(id);
-      if (index > -1) {
-        await Comment.deleteMany({ blog: id });
-        await blog.deleteOne();
-        user.blogs.splice(index, 1);
-        await user.save();
-        res.json({ status: 200, message: "Blog deleted" });
-      } else {
-        res.status(404);
-        throw new Error("Blog not found in user's blogs");
-      }
-    } else {
-      res.status(404);
-      throw new Error("User not found");
-    }
+    // Send Kafka message after blog deletion
+    await sendMessage('blog-events', JSON.stringify({ type: 'BLOG_DELETED', blogId: id }));
+
+    res.json({ status: 200, message: "Blog deleted" });
   } catch (err) {
     console.error(err);
-    res.status(500);
-    throw new Error("Something went wrong");
+    res.status(500).json({ message: "Something went wrong" });
   }
 });
 
 const updateBlog = asyncHandler(async (req, res) => {
   const { blogName, category, article, authorName } = req.body;
+  
   if (!article && !blogName && !category && !authorName) {
-    res.status(400);
-    throw new Error(
-      "Cannot update an empty article OR blogName OR category OR authorName"
-    );
+    res.status(400).json({ message: "Cannot update with empty fields" });
+    return;
   }
+
   try {
     const blog = await Blog.findById(req.params.id);
 
-    if (blog.user !== req.user.loginId) {
-      res.status(401);
-      throw new Error("You can't perform this action");
+    if (!blog || blog.user.toString() !== req.params.loginId) {
+      res.status(401).json({ message: "Unauthorized action or blog not found" });
+      return;
     }
 
-    if (blog) {
-      if (blogName) {
-        blog.blogName = blogName;
-      }
-      if (article) {
-        blog.article = article;
-      }
-      if (category) {
-        blog.category = category;
-      }
-      if (authorName) {
-        blog.authorName = authorName;
-      }
+    if (blogName) blog.blogName = blogName;
+    if (article) blog.article = article;
+    if (category) blog.category = category;
+    if (authorName) blog.authorName = authorName;
 
-      const updatedBlog = await blog.save();
-      res.json(updatedBlog);
-    } else {
-      res.status(404);
-      throw new Error("Blog not found");
-    }
+    const updatedBlog = await blog.save();
+
+    // Send Kafka message after blog update
+    await sendMessage('blog-events', JSON.stringify({ type: 'BLOG_UPDATED', blog: updatedBlog }));
+
+    res.json(updatedBlog);
   } catch (err) {
-    res.status(500);
-    throw new Error("Cannot update blog");
+    res.status(500).json({ message: "Something went wrong" });
   }
 });
 
@@ -229,17 +188,20 @@ const updateLike = asyncHandler(async (req, res) => {
   try {
     const blog = await Blog.findById(req.params.id);
 
-    if (blog) {
-      blog.like = blog.like + 1;
-      const updatedBlog = await blog.save();
-      res.json(updatedBlog);
-    } else {
-      res.status(404);
-      throw new Error("Blog not found");
+    if (!blog) {
+      res.status(404).json({ message: "Blog not found" });
+      return;
     }
+
+    blog.like += 1;
+    const updatedBlog = await blog.save();
+
+    // Send Kafka message after blog like update
+    await sendMessage('blog-events', JSON.stringify({ type: 'BLOG_LIKED', blog: updatedBlog }));
+
+    res.json(updatedBlog);
   } catch (err) {
-    res.status(500);
-    throw new Error("Cannot update blog");
+    res.status(500).json({ message: "Cannot update blog like" });
   }
 });
 
@@ -252,5 +214,5 @@ module.exports = {
   updateLike,
   getUserBlogs,
   getBlogByCategoryAndDuration,
-  getBlogByCategory
+  getBlogByCategory,
 };

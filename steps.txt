@@ -1,0 +1,4 @@
+to run --- docker-compose up -d
+to remove setup from --- docker-compose down
+
+to verify -- docker-compose logs kafka
